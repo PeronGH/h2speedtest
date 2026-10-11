@@ -62,7 +62,7 @@ func (c *console) warn(format string, args ...any) {
 }
 
 func main() {
-	streams := flag.Int("n", 8, "number of concurrent streams")
+	streams := flag.Int("n", 100, "number of concurrent streams")
 	timeout := flag.Duration("t", 10*time.Second, "test duration")
 	resolve := flag.String("resolve", "", "connect to this `ip` instead of resolving the URL host")
 	flag.Usage = func() {

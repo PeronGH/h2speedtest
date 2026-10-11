@@ -9,7 +9,7 @@ go install github.com/PeronGH/h2speedtest@latest
 h2speedtest [-n streams] [-t duration] [--resolve ip] <url>
 ```
 
-- `-n` concurrent streams (default 8)
+- `-n` concurrent streams (default 100)
 - `-t` test duration (default 10s)
 - `--resolve` connect to this IP instead of resolving the URL host (SNI and `Host` still use the URL)
 
