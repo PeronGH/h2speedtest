@@ -134,31 +134,53 @@ func run(rawURL string, streams int, timeout time.Duration) error {
 		con.status = true
 	}
 
+	tmpl, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	tmpl.Header.Set("Accept-Encoding", "identity")
+
+	// The hook fires as soon as a stream ends on the wire, which is before
+	// its buffered body has been drained, so refilling from it keeps exactly
+	// N streams open without waiting on body readers.
+	wake := make(chan struct{}, 1)
+	cc.SetStateHook(func(*http.ClientConn) {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+
 	var warnEncoding sync.Once
+	var streamErrors atomic.Int64
 	var wg sync.WaitGroup
-	for range streams {
-		wg.Go(func() {
-			if err := stream(ctx, cc, u.String(), con, &warnEncoding); err != nil && ctx.Err() == nil {
-				cancel(err)
-			}
-		})
+	fill := func() {
+		for ctx.Err() == nil && cc.InFlight() < streams && cc.Reserve() == nil {
+			wg.Go(func() {
+				err := fetch(cc, tmpl.Clone(ctx), con, &warnEncoding)
+				switch {
+				case err == nil || ctx.Err() != nil:
+				case cc.Err() != nil || errors.As(err, new(statusError)):
+					cancel(err)
+				default:
+					streamErrors.Add(1)
+				}
+			})
+		}
 	}
 
 	start := time.Now()
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	lastTime, lastBytes := start, wire.Load()
+	fill()
 loop:
 	for {
 		select {
-		case <-done:
+		case <-ctx.Done():
 			break loop
+		case <-wake:
+			fill()
 		case now := <-ticker.C:
 			if !con.status {
 				continue
@@ -166,46 +188,40 @@ loop:
 			b := wire.Load()
 			cur := rate(b-lastBytes, now.Sub(lastTime))
 			lastTime, lastBytes = now, b
-			con.setStatus(fmt.Sprintf("%5.1fs  %s  %s  avg %s  streams %d/%d",
-				now.Sub(start).Seconds(), formatBytes(b), cur, rate(b, now.Sub(start)), cc.InFlight(), streams))
+			con.setStatus(fmt.Sprintf("%5.1fs  %s  %s  avg %s  streams %d/%d  errors %d",
+				now.Sub(start).Seconds(), formatBytes(b), cur, rate(b, now.Sub(start)), cc.InFlight(), streams, streamErrors.Load()))
 		}
 	}
 	elapsed := time.Since(start)
+	b := wire.Load()
+	wg.Wait()
 	con.clearStatus()
 
-	if err := context.Cause(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+	if err := context.Cause(ctx); !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	b := wire.Load()
-	fmt.Printf("%s  %s in %.1fs  avg %s  %d streams\n", rawURL, formatBytes(b), elapsed.Seconds(), rate(b, elapsed), streams)
+	fmt.Printf("%s  %s in %.1fs  avg %s  %d streams  %d errors\n", rawURL, formatBytes(b), elapsed.Seconds(), rate(b, elapsed), streams, streamErrors.Load())
 	return nil
 }
 
-func stream(ctx context.Context, cc *http.ClientConn, target string, con *console, warnEncoding *sync.Once) error {
-	for ctx.Err() == nil {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Accept-Encoding", "identity")
-		resp, err := cc.RoundTrip(req)
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			resp.Body.Close()
-			return fmt.Errorf("unexpected status %s", resp.Status)
-		}
-		if enc := resp.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-			warnEncoding.Do(func() { con.warn("server sent Content-Encoding %q despite identity request", enc) })
-		}
-		_, err = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return err
-		}
+type statusError struct{ status string }
+
+func (e statusError) Error() string { return "unexpected status " + e.status }
+
+func fetch(cc *http.ClientConn, req *http.Request, con *console, warnEncoding *sync.Once) error {
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return statusError{resp.Status}
+	}
+	if enc := resp.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
+		warnEncoding.Do(func() { con.warn("server sent Content-Encoding %q despite identity request", enc) })
+	}
+	_, err = io.Copy(io.Discard, resp.Body)
+	return err
 }
 
 func rate(bytes int64, d time.Duration) string {
