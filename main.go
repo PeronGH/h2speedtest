@@ -64,6 +64,7 @@ func (c *console) warn(format string, args ...any) {
 func main() {
 	streams := flag.Int("n", 8, "number of concurrent streams")
 	timeout := flag.Duration("t", 10*time.Second, "test duration")
+	resolve := flag.String("resolve", "", "connect to this `ip` instead of resolving the URL host")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] <url>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -73,13 +74,13 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(flag.Arg(0), *streams, *timeout); err != nil {
+	if err := run(flag.Arg(0), *streams, *timeout, *resolve); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(rawURL string, streams int, timeout time.Duration) error {
+func run(rawURL string, streams int, timeout time.Duration, resolve string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return err
@@ -110,6 +111,9 @@ func run(rawURL string, streams int, timeout time.Duration) error {
 		Protocols:          protocols,
 		DisableCompression: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if resolve != "" {
+				addr = net.JoinHostPort(resolve, port)
+			}
 			c, err := dialer.DialContext(ctx, network, addr)
 			if err != nil {
 				return nil, err
@@ -118,7 +122,9 @@ func run(rawURL string, streams int, timeout time.Duration) error {
 		},
 	}
 
-	cc, err := tr.NewClientConn(ctx, u.Scheme, net.JoinHostPort(u.Hostname(), port))
+	dialCtx, cancelDial := context.WithTimeout(ctx, 5*time.Second)
+	cc, err := tr.NewClientConn(dialCtx, u.Scheme, net.JoinHostPort(u.Hostname(), port))
+	cancelDial()
 	if err != nil {
 		return err
 	}
