@@ -19,5 +19,5 @@ The URL is requested repeatedly on every stream until the duration elapses, with
 
 ```
 $ h2speedtest -n 4 -t 5s https://cloudflare.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1
-https://cloudflare.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1  1.25 MB in 5.0s  avg 1.99 Mbit/s  4 streams  0 errors
+https://cloudflare.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1  2.92 MB in 5.0s  avg 4.68 Mbit/s  4 streams  12 requests  0 errors
 ```

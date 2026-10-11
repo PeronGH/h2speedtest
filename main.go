@@ -158,14 +158,16 @@ func run(rawURL string, streams int, timeout time.Duration, resolve string) erro
 	})
 
 	var warnEncoding sync.Once
-	var streamErrors atomic.Int64
+	var requests, streamErrors atomic.Int64
 	var wg sync.WaitGroup
 	fill := func() {
 		for ctx.Err() == nil && cc.InFlight() < streams && cc.Reserve() == nil {
 			wg.Go(func() {
 				err := fetch(cc, tmpl.Clone(ctx), con, &warnEncoding)
 				switch {
-				case err == nil || ctx.Err() != nil:
+				case err == nil:
+					requests.Add(1)
+				case ctx.Err() != nil:
 				case cc.Err() != nil || errors.As(err, new(statusError)):
 					cancel(err)
 				default:
@@ -194,19 +196,19 @@ loop:
 			b := wire.Load()
 			cur := rate(b-lastBytes, now.Sub(lastTime))
 			lastTime, lastBytes = now, b
-			con.setStatus(fmt.Sprintf("%5.1fs  %s  %s  avg %s  streams %d/%d  errors %d",
-				now.Sub(start).Seconds(), formatBytes(b), cur, rate(b, now.Sub(start)), cc.InFlight(), streams, streamErrors.Load()))
+			con.setStatus(fmt.Sprintf("%5.1fs  %s  %s  avg %s  streams %d/%d  requests %d  errors %d",
+				now.Sub(start).Seconds(), formatBytes(b), cur, rate(b, now.Sub(start)), cc.InFlight(), streams, requests.Load(), streamErrors.Load()))
 		}
 	}
 	elapsed := time.Since(start)
-	b := wire.Load()
+	b, reqs := wire.Load(), requests.Load()
 	wg.Wait()
 	con.clearStatus()
 
 	if err := context.Cause(ctx); !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	fmt.Printf("%s  %s in %.1fs  avg %s  %d streams  %d errors\n", rawURL, formatBytes(b), elapsed.Seconds(), rate(b, elapsed), streams, streamErrors.Load())
+	fmt.Printf("%s  %s in %.1fs  avg %s  %d streams  %d requests  %d errors\n", rawURL, formatBytes(b), elapsed.Seconds(), rate(b, elapsed), streams, reqs, streamErrors.Load())
 	return nil
 }
 
